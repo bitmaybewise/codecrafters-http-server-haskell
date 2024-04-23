@@ -37,9 +37,8 @@ main = do
     msg <- recv clientSocket 64 -- limiting bytes read as will only parse the path for now
     BC.putStrLn msg
 
-    case hackyHTTPPath msg of
-      Path "/" -> void $ send clientSocket "HTTP/1.1 200 OK\r\n\r\n"
-      _ -> void $ send clientSocket "HTTP/1.1 404 Not Found\r\n\r\n"
+    let path = hackyHTTPPath msg
+    route clientSocket path
 
     close clientSocket
 
@@ -51,3 +50,20 @@ hackyHTTPPath httpMsg =
       pathValues = (BC.split ' ' . head) msgLines
       path = pathValues !! 1
    in Path path
+
+route :: Socket -> Path -> IO ()
+route clientSocket (Path path)
+  | path == "/" = void $ send clientSocket "HTTP/1.1 200 OK\r\n\r\n"
+  | "/echo/" `BC.isPrefixOf` path =
+      let randomStr = BC.drop 6 path
+          strlen = BC.pack . show . BC.length $ randomStr
+          strResponse =
+            BC.concat
+              [ "HTTP/1.1 200 OK\r\n",
+                "Content-Type: text/plain\r\n",
+                "Content-Length: " <> strlen <> "\r\n",
+                "\r\n",
+                randomStr <> "\r\n"
+              ]
+       in void $ send clientSocket strResponse
+  | otherwise = void $ send clientSocket "HTTP/1.1 404 Not Found\r\n\r\n"
