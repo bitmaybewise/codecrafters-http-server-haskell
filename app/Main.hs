@@ -28,6 +28,15 @@ main = do
   addrInfo <- getAddrInfo Nothing (Just host) (Just port)
 
   serverSocket <- socket (addrFamily $ head addrInfo) Stream defaultProtocol
+
+  -- Setting socket to ReuseAddr will tell the OS that it can be reused right away
+  -- after application stops, without waiting for remaining packets. See:
+  -- https://en.wikipedia.org/wiki/Transmission_Control_Protocol#Protocol_operation
+  -- codecrafters.io halts the program between automated tests, so the reason why
+  -- releasing the socket is necessary here, otherwise tests will fail to acquire the
+  -- connection to the socket using the same port.
+  setSocketOption serverSocket ReuseAddr 1
+
   bind serverSocket $ addrAddress $ head addrInfo
   listen serverSocket 5
 
@@ -89,20 +98,3 @@ extractHeaders rest =
   let listPairs = map BC.words rest
       asTuples = map (\each -> if length each == 2 then (each !! 0, each !! 1) else ("", "")) listPairs
    in Map.fromList asTuples
-
--- \| path == "/user-agent" && verb == "GET" =
---     -- let listPairs = map BC.words rest'
---     --     asTuples = map (\each -> if length each == 2 then (each !! 0, each !! 1) else ("", "")) listPairs
---     --     headers = Map.fromList asTuples
---     --     userAgent = fromMaybe "UNKNOWN" $ Map.lookup "User-Agent:" headers
---     --     strlen = BC.length userAgent
---     --     strResponse =
---     --       BC.concat
---     --         [ "HTTP/1.1 200 OK\r\n",
---     --           "Content-Type: text/plain\r\n",
---     --           "Content-Length: " <> (BC.pack . show) strlen <> "\r\n",
---     --           "\r\n",
---     --           userAgent
---     --         ]
---     --  in void $ send clientSocket strResponse
---     void $ send clientSocket "HTTP/1.1 500 BOOM\r\n\r\n"
