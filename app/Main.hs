@@ -2,6 +2,7 @@
 
 module Main (main) where
 
+import Control.Concurrent (forkIO)
 import Control.Monad (forever)
 import qualified Data.ByteString.Char8 as BC
 import Data.Functor (void)
@@ -45,44 +46,24 @@ main = do
     (clientSocket, clientAddr) <- accept serverSocket
     BC.putStrLn $ "Accepted connection from " <> BC.pack (show clientAddr) <> "."
     -- Handle the clientSocket as needed...
-    msg <- recv clientSocket 1024 -- limiting bytes read as will only parse the path for now
-    BC.putStrLn msg
-
-    let (verb, path, rest) = extractPath $ map BC.strip $ BC.lines msg
-        headers = extractHeaders rest
-
-    route clientSocket verb path headers
-
-    close clientSocket
+    forkIO $ do
+      msg <- recv clientSocket 1024 -- limiting bytes read as will only parse the path for now
+      BC.putStrLn msg
+      let (verb, path, rest) = extractPath $ map BC.strip $ BC.lines msg
+          headers = extractHeaders rest
+      route clientSocket verb path headers
+      close clientSocket
 
 route :: Socket -> BC.ByteString -> BC.ByteString -> Map.Map BC.ByteString BC.ByteString -> IO ()
 route clientSocket verb path headers
-  | path == "/" = void $ send clientSocket "HTTP/1.1 200 OK\r\n\r\n"
+  | path == "/" = void $ send clientSocket (respondWith' 200)
   | "/echo/" `BC.isPrefixOf` path =
       let randomStr = BC.drop 6 path
-          strlen = BC.pack . show . BC.length $ randomStr
-          strResponse =
-            BC.concat
-              [ "HTTP/1.1 200 OK\r\n",
-                "Content-Type: text/plain\r\n",
-                "Content-Length: " <> strlen <> "\r\n",
-                "\r\n",
-                randomStr
-              ]
-       in void $ send clientSocket strResponse
+       in void $ send clientSocket (respondWith 200 randomStr)
   | path == "/user-agent" && verb == "GET" =
       let userAgent = fromMaybe "UNKNOWN" $ Map.lookup "User-Agent:" headers
-          strlen = BC.length userAgent
-          strResponse =
-            BC.concat
-              [ "HTTP/1.1 200 OK\r\n",
-                "Content-Type: text/plain\r\n",
-                "Content-Length: " <> (BC.pack . show) strlen <> "\r\n",
-                "\r\n",
-                userAgent
-              ]
-       in void $ send clientSocket strResponse
-  | otherwise = void $ send clientSocket "HTTP/1.1 404 Not Found\r\n\r\n"
+       in void $ send clientSocket (respondWith 200 userAgent)
+  | otherwise = void $ send clientSocket (respondWith' 404)
 
 extractPath :: [BC.ByteString] -> (BC.ByteString, BC.ByteString, [BC.ByteString])
 extractPath lines'
@@ -98,3 +79,22 @@ extractHeaders rest =
   let listPairs = map BC.words rest
       asTuples = map (\each -> if length each == 2 then (each !! 0, each !! 1) else ("", "")) listPairs
    in Map.fromList asTuples
+
+status2msg :: Map.Map Int BC.ByteString
+status2msg = Map.fromList [(200, "OK"), (404, "Not Found")]
+
+respondWith :: Int -> BC.ByteString -> BC.ByteString
+respondWith statusCode body =
+  let strlen = BC.length body
+      toBS = BC.pack . show
+      statusMsg = fromMaybe "UNKNOWN" $ Map.lookup statusCode status2msg
+   in BC.concat
+        [ "HTTP/1.1 " <> toBS statusCode <> " " <> statusMsg <> "\r\n",
+          "Content-Type: text/plain\r\n",
+          "Content-Length: " <> toBS strlen <> "\r\n",
+          "\r\n",
+          body
+        ]
+
+respondWith' :: Int -> BC.ByteString
+respondWith' statusCode = respondWith statusCode ""
