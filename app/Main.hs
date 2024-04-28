@@ -6,10 +6,13 @@ import Control.Concurrent (forkIO)
 import Control.Monad (forever)
 import qualified Data.ByteString.Char8 as BC
 import Data.Functor (void)
+import Data.List (elemIndex)
 import qualified Data.Map.Lazy as Map
 import Data.Maybe (fromMaybe)
 import Network.Socket
 import Network.Socket.ByteString (recv, send)
+import System.Directory (doesFileExist)
+import System.Environment (getArgs)
 import System.IO (BufferMode (..), hSetBuffering, stdout)
 
 main :: IO ()
@@ -41,6 +44,9 @@ main = do
   bind serverSocket $ addrAddress $ head addrInfo
   listen serverSocket 5
 
+  args <- getArgs
+  params <- parseArgs args
+
   -- Accept connections and handle them forever
   forever $ do
     (clientSocket, clientAddr) <- accept serverSocket
@@ -51,18 +57,47 @@ main = do
       BC.putStrLn msg
       let (verb, path, rest) = extractPath $ map BC.strip $ BC.lines msg
           headers = extractHeaders rest
-      route clientSocket verb path headers
+      route clientSocket verb path headers params
       close clientSocket
 
-route :: Socket -> BC.ByteString -> BC.ByteString -> Map.Map BC.ByteString BC.ByteString -> IO ()
-route clientSocket verb path headers
+newtype Params = Params {dir :: Maybe BC.ByteString} deriving (Show)
+
+type Headers = Map.Map BC.ByteString BC.ByteString
+
+parseArgs :: [String] -> IO Params
+parseArgs args =
+  let dirParamIdx = elemIndex "--directory" args
+      directory =
+        dirParamIdx >>= \idx ->
+          if length args > idx
+            then Just . BC.pack $ args !! (idx + 1)
+            else Nothing
+   in pure $ Params directory
+
+route :: Socket -> BC.ByteString -> BC.ByteString -> Headers -> Params -> IO ()
+route clientSocket verb path headers params
   | path == "/" = void $ send clientSocket (respondWith' 200)
   | "/echo/" `BC.isPrefixOf` path =
       let randomStr = BC.drop 6 path
        in void $ send clientSocket (respondWith 200 randomStr)
-  | path == "/user-agent" && verb == "GET" =
+  | verb == "GET" && path == "/user-agent" =
       let userAgent = fromMaybe "UNKNOWN" $ Map.lookup "User-Agent:" headers
        in void $ send clientSocket (respondWith 200 userAgent)
+  | verb == "GET" && "/files/" `BC.isPrefixOf` path =
+      let aFilepath = do
+            filenameFromPath <- BC.stripPrefix "/files/" path
+            paramDir <- dir params
+            pure $ paramDir <> "/" <> filenameFromPath
+       in void $ case aFilepath of
+            Nothing -> send clientSocket (respondWith' 404)
+            Just filepath -> do
+              let filepath' = BC.unpack filepath
+              exists <- doesFileExist filepath'
+              if exists
+                then do
+                  fileContent <- BC.readFile filepath'
+                  send clientSocket (respond 200 "application/octet-stream" fileContent)
+                else send clientSocket (respondWith' 404)
   | otherwise = void $ send clientSocket (respondWith' 404)
 
 extractPath :: [BC.ByteString] -> (BC.ByteString, BC.ByteString, [BC.ByteString])
@@ -83,18 +118,21 @@ extractHeaders rest =
 status2msg :: Map.Map Int BC.ByteString
 status2msg = Map.fromList [(200, "OK"), (404, "Not Found")]
 
-respondWith :: Int -> BC.ByteString -> BC.ByteString
-respondWith statusCode body =
+respond :: Int -> BC.ByteString -> BC.ByteString -> BC.ByteString
+respond statusCode contentType body =
   let strlen = BC.length body
       toBS = BC.pack . show
       statusMsg = fromMaybe "UNKNOWN" $ Map.lookup statusCode status2msg
    in BC.concat
         [ "HTTP/1.1 " <> toBS statusCode <> " " <> statusMsg <> "\r\n",
-          "Content-Type: text/plain\r\n",
+          "Content-Type:" <> contentType <> "\r\n",
           "Content-Length: " <> toBS strlen <> "\r\n",
           "\r\n",
           body
         ]
+
+respondWith :: Int -> BC.ByteString -> BC.ByteString
+respondWith statusCode = respond statusCode "text/plain"
 
 respondWith' :: Int -> BC.ByteString
 respondWith' statusCode = respondWith statusCode ""

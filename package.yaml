@@ -25,6 +25,7 @@ dependencies:
   - network # establish a simple TCP network
   - bytestring # useful to send bytes over the network
   - containers
+  - directory
 
 executables:
   hs-http-server-clone-exe:
