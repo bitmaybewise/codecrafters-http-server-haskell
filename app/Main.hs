@@ -57,7 +57,8 @@ main = do
       BC.putStrLn msg
       let (verb, path, rest) = extractPath $ map BC.strip $ BC.lines msg
           headers = extractHeaders rest
-      route clientSocket verb path headers params
+          body = last rest
+      route clientSocket verb path headers body params
       close clientSocket
 
 newtype Params = Params {dir :: Maybe BC.ByteString} deriving (Show)
@@ -74,8 +75,8 @@ parseArgs args =
             else Nothing
    in pure $ Params directory
 
-route :: Socket -> BC.ByteString -> BC.ByteString -> Headers -> Params -> IO ()
-route clientSocket verb path headers params
+route :: Socket -> BC.ByteString -> BC.ByteString -> Headers -> BC.ByteString -> Params -> IO ()
+route clientSocket verb path headers body params
   | path == "/" = void $ send clientSocket (respondWith' 200)
   | "/echo/" `BC.isPrefixOf` path =
       let randomStr = BC.drop 6 path
@@ -84,21 +85,30 @@ route clientSocket verb path headers params
       let userAgent = fromMaybe "UNKNOWN" $ Map.lookup "User-Agent:" headers
        in void $ send clientSocket (respondWith 200 userAgent)
   | verb == "GET" && "/files/" `BC.isPrefixOf` path =
-      let aFilepath = do
-            filenameFromPath <- BC.stripPrefix "/files/" path
-            paramDir <- dir params
-            pure $ paramDir <> "/" <> filenameFromPath
-       in void $ case aFilepath of
-            Nothing -> send clientSocket (respondWith' 404)
-            Just filepath -> do
-              let filepath' = BC.unpack filepath
-              exists <- doesFileExist filepath'
-              if exists
-                then do
-                  fileContent <- BC.readFile filepath'
-                  send clientSocket (respond 200 "application/octet-stream" fileContent)
-                else send clientSocket (respondWith' 404)
+      void $ case extractFilenameFromPath path params of
+        Nothing -> send clientSocket (respondWith' 404)
+        Just filepath -> do
+          let filepath' = BC.unpack filepath
+          exists <- doesFileExist filepath'
+          if exists
+            then do
+              fileContent <- BC.readFile filepath'
+              send clientSocket (respond 200 "application/octet-stream" fileContent)
+            else send clientSocket (respondWith' 404)
+  | verb == "POST" && "/files/" `BC.isPrefixOf` path =
+      void $ case extractFilenameFromPath path params of
+        Nothing -> send clientSocket (respondWith' 404)
+        Just filepath -> do
+          let filepath' = BC.unpack filepath
+          BC.writeFile filepath' body
+          send clientSocket (respondWith' 201)
   | otherwise = void $ send clientSocket (respondWith' 404)
+
+extractFilenameFromPath :: BC.ByteString -> Params -> Maybe BC.ByteString
+extractFilenameFromPath path params = do
+  filenameFromPath <- BC.stripPrefix "/files/" path
+  paramDir <- dir params
+  pure $ paramDir <> "/" <> filenameFromPath
 
 extractPath :: [BC.ByteString] -> (BC.ByteString, BC.ByteString, [BC.ByteString])
 extractPath lines'
@@ -116,7 +126,7 @@ extractHeaders rest =
    in Map.fromList asTuples
 
 status2msg :: Map.Map Int BC.ByteString
-status2msg = Map.fromList [(200, "OK"), (404, "Not Found")]
+status2msg = Map.fromList [(200, "OK"), (201, "Created"), (404, "Not Found")]
 
 respond :: Int -> BC.ByteString -> BC.ByteString -> BC.ByteString
 respond statusCode contentType body =
